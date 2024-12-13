@@ -103,12 +103,6 @@ zero_shot_summaries_batch = []
 # Generate example indices for the full dataset
 example_indices = range(total_examples)
 
-# Function to yield batches
-def batched_indices(iterable, size):
-    iterator = iter(iterable)
-    for first in iterator:
-        yield [first] + list(islice(iterator, size - 1))
-
 # Process each batch of indices
 for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
     print(f'{batch_num + 1}')
@@ -152,12 +146,6 @@ zero_shot_changed_summaries_batch = []
 
 # Generate example indices for the full dataset
 example_indices = range(total_examples)
-
-# Function to yield batches
-def batched_indices(iterable, size):
-    iterator = iter(iterable)
-    for first in iterator:
-        yield [first] + list(islice(iterator, size - 1))
 
 # Process each batch of indices
 for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
