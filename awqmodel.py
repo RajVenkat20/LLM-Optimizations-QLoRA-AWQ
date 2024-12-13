@@ -13,10 +13,12 @@ from itertools import islice
 from rouge_score import rouge_scorer
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model, TaskType
+from google.colab import drive
 
 import numpy as np
 import torch
 import psutil
+import time
 
 dataset = load_dataset("knkarthick/dialogsum", trust_remote_code=True)
 
@@ -42,9 +44,8 @@ model = AutoModelForSeq2SeqLM.from_pretrained(
     device_map="auto"
 )
 
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
-# Move quantized model to device
 device = torch.device("cuda")
 model.to(device)
 
@@ -59,7 +60,6 @@ def print_number_of_trainable_model_parameters(model):
 
 print(print_number_of_trainable_model_parameters(model))
 
-import time
 def get_memory_usage():
     process = psutil.Process()
     ram_usage = process.memory_info().rss / (1024 ** 2)  # Convert bytes to MB
@@ -72,6 +72,57 @@ start_time = time.time()
 # Measure initial memory usage
 initial_ram_usage = get_memory_usage()
 initial_gpu_memory = torch.cuda.memory_allocated() / (1024 ** 2)  # Convert bytes to MB
+
+def tokenize_function(example):
+    start_prompt = 'Summarize the following conversation.\n\n'
+    end_prompt = '\n\nSummary: '
+    prompt = [start_prompt + dialogue + end_prompt for dialogue in example["dialogue"]]
+    example['input_ids'] = tokenizer(prompt, padding="max_length", truncation=True, return_tensors="pt").input_ids
+    example['labels'] = tokenizer(example["summary"], padding="max_length", truncation=True, return_tensors="pt").input_ids
+
+    return example
+
+# The dataset actually contains 3 diff splits: train, validation, test.
+# The tokenize_function code is handling all data across all splits in batches.
+tokenized_datasets = dataset.map(tokenize_function, batched=True)
+tokenized_datasets = tokenized_datasets.remove_columns(['id', 'topic', 'dialogue', 'summary',])
+
+print(f"Shapes of the datasets:")
+print(f"Training: {tokenized_datasets['train'].shape}")
+print(f"Validation: {tokenized_datasets['validation'].shape}")
+print(f"Test: {tokenized_datasets['test'].shape}")
+
+print(tokenized_datasets)
+
+drive.mount('/content/drive')
+output_dir = '/content/drive/MyDrive/training-run1'
+
+training_args = TrainingArguments(
+    output_dir=output_dir,
+    learning_rate=1e-5,
+    num_train_epochs=1,
+    weight_decay=0.01,
+    logging_steps=10,
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    bf16=True
+)
+
+trainer = Trainer(
+    model=model,
+    tokenizer=tokenizer,
+    args=training_args,
+    train_dataset=tokenized_datasets['train'],
+    eval_dataset=tokenized_datasets['validation']
+)
+
+trainer.train()
+
+model_path = '/content/drive/MyDrive/training-run1/checkpoint-1558'
+
+trained = AutoModelForSeq2SeqLM.from_pretrained(model_path, torch_dtype=torch.bfloat16)
+device = torch.device("cuda")
+trained.to(device)
 
 batched_summaries=[]
 example_indices = range(len(dataset['train']))  # In the end replace it with len(dataset['train'])
@@ -96,7 +147,7 @@ for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
     # inputs = tokenizer(dialogues, return_tensors='pt', padding=True, truncation=True)
 
     # Generate summaries for all dialogues in the batch at once
-    outputs = model.generate(inputs["input_ids"], max_new_tokens=50)
+    outputs = trained.generate(inputs["input_ids"], max_new_tokens=50)
 
     # Decode and print each example in the batch
     for i, (dialogue, summary, output) in enumerate(zip(dialogues, summaries, outputs)):
@@ -114,12 +165,6 @@ zero_shot_summaries_batch = []
 
 # Generate example indices for the full dataset
 example_indices = range(total_examples)
-
-# Function to yield batches
-def batched_indices(iterable, size):
-    iterator = iter(iterable)
-    for first in iterator:
-        yield [first] + list(islice(iterator, size - 1))
 
 # Process each batch of indices
 for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
@@ -143,7 +188,7 @@ for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
     inputs = tokenizer(prompts, return_tensors='pt', padding=True, truncation=True).to(device)
 
     # Generate summaries for all prompts in the batch at once
-    outputs = model.generate(inputs["input_ids"], max_new_tokens=50)
+    outputs = trained.generate(inputs["input_ids"], max_new_tokens=50)
 
     # Decode and print each example in the batch
     for i, (prompt, summary, output) in enumerate(zip(prompts, summaries, outputs)):
@@ -164,12 +209,6 @@ zero_shot_changed_summaries_batch = []
 
 # Generate example indices for the full dataset
 example_indices = range(total_examples)
-
-# Function to yield batches
-def batched_indices(iterable, size):
-    iterator = iter(iterable)
-    for first in iterator:
-        yield [first] + list(islice(iterator, size - 1))
 
 # Process each batch of indices
 for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
@@ -193,7 +232,7 @@ for batch_num, batch in enumerate(batched_indices(example_indices, batch_size)):
     inputs = tokenizer(prompts, return_tensors='pt', padding=True, truncation=True).to(device)
 
     # Generate summaries for all prompts in the batch at once
-    outputs = model.generate(inputs["input_ids"], max_new_tokens=100)
+    outputs = trained.generate(inputs["input_ids"], max_new_tokens=100)
 
     # Decode and append summaries
     for i, (prompt, summary, output) in enumerate(zip(prompts, summaries, outputs)):
